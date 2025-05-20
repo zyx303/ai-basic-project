@@ -178,15 +178,21 @@ def evaluate_model(model, test_loader, criterion, device=None, classes=None):
     y_pred = []
 
     with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
+        for batch in test_loader:
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            token_type_ids = batch['token_type_ids'].to(device) if 'token_type_ids' in batch else None
+            labels = batch['labels'].to(device)
 
-            # 前向传播
-            outputs = model(inputs)
+           # 前向传播
+            if token_type_ids is not None:
+                outputs = model(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+            else:
+                outputs = model(input_ids, attention_mask=attention_mask)
             loss = criterion(outputs, labels)
 
             # 统计
-            test_loss += loss.item() * inputs.size(0)
+            test_loss += loss.item() * input_ids.size(0)
             _, predicted = torch.max(outputs, 1)
             test_total += labels.size(0)
             test_correct += (predicted == labels).sum().item()
