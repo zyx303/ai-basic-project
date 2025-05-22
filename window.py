@@ -19,6 +19,90 @@ from utils.data_loader import (load_test, load_train, set_seed, get_dataset_info
                                validate_data_format, visualize_data_distribution)
 from utils.train_utils import train_model, evaluate_model
 
+class DataLoadingThread(QThread):
+    """用于后台加载数据集的线程类"""
+    update_progress = pyqtSignal(int)
+    loading_complete = pyqtSignal(object, object, object, str)
+    
+    def __init__(self, params):
+        super().__init__()
+        self.params = params
+        
+    def run(self):
+        try:
+            # 获取参数
+            batch_size = self.params.get('batch_size', 32)
+            max_length = self.params.get('max_length', 128)
+            train_split = self.params.get('train_split', 0.9)
+            train_path = self.params.get('train_path')
+            test_path = self.params.get('test_path')
+            
+            # 模拟加载进度
+            self.update_progress.emit(10)
+            
+            # 加载训练和验证集
+            self.update_progress.emit(20)
+            train_loader, valid_loader = load_train(
+                batch_size=batch_size,
+                num_workers=4,
+                split_ratio=1.0-train_split,
+                max_length=max_length,
+                custom_train_path=train_path
+            )
+            
+            self.update_progress.emit(60)
+            
+            # 加载测试集
+            test_loader = load_test(
+                batch_size=batch_size,
+                num_workers=4,
+                max_length=max_length,
+                custom_test_path=test_path
+            )
+            
+            self.update_progress.emit(90)
+            
+            # 获取数据集信息
+            info_str = f"数据集已成功加载: {len(train_loader.dataset)} 训练样本,\n {len(valid_loader.dataset)} 验证样本,\n {len(test_loader.dataset)} 测试样本"
+            
+            self.update_progress.emit(100)
+            
+            # 发送加载完成信号
+            self.loading_complete.emit(train_loader, valid_loader, test_loader, info_str)
+            
+        except Exception as e:
+            self.loading_complete.emit(None, None, None, f"加载数据集时出错: {str(e)}")
+
+class ModelLoadingThread(QThread):
+    """用于后台加载模型的线程类"""
+    update_progress = pyqtSignal(int)
+    loading_complete = pyqtSignal(object, str)
+    
+    def __init__(self, model_path):
+        super().__init__()
+        self.model_path = model_path
+        
+    def run(self):
+        try:
+            # 模拟进度更新
+            self.update_progress.emit(10)
+            
+            # 加载模型 - 使用新的类方法
+            self.update_progress.emit(30)
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            
+            self.update_progress.emit(50)
+            model = SentimentClassifier.load_from_checkpoint(self.model_path, device=device)
+            
+            self.update_progress.emit(80)
+            
+            # 发送加载完成信号
+            self.update_progress.emit(100)
+            self.loading_complete.emit(model, "模型加载成功")
+            
+        except Exception as e:
+            self.loading_complete.emit(None, f"加载模型出错: {str(e)}")
+
 class TrainingThread(QThread):
     """用于后台训练模型的线程类"""
     update_progress = pyqtSignal(int)
@@ -225,10 +309,6 @@ class AIModelGUI(QMainWindow):
         preprocess_group = QGroupBox("数据预处理")
         preprocess_layout = QFormLayout(preprocess_group)
         
-        self.normalize_check = QCheckBox("标准化")
-        self.normalize_check.setChecked(True)
-        preprocess_layout.addRow("", self.normalize_check)
-        
         self.max_length = QSpinBox()
         self.max_length.setRange(16, 512)
         self.max_length.setValue(128)
@@ -246,20 +326,30 @@ class AIModelGUI(QMainWindow):
         button_layout = QHBoxLayout()
         load_button = QPushButton("加载数据")
         load_button.clicked.connect(self.load_dataset)
-        preview_button = QPushButton("预览数据")
-        preview_button.clicked.connect(self.preview_dataset)
+        self.preview_button = QPushButton("预览数据")
+        self.preview_button.clicked.connect(self.preview_dataset)
+        # self.preview_button.setEnabled(False)  # 初始禁用，直到数据加载完成
         button_layout.addWidget(load_button)
-        button_layout.addWidget(preview_button)
+        button_layout.addWidget(self.preview_button)
         
         # 数据集信息显示
         self.dataset_info = QTextEdit()
         self.dataset_info.setReadOnly(True)
         self.dataset_info.setFixedHeight(200)
+
+        # 数据加载进度条
+        loading_progress_layout = QHBoxLayout()
+        loading_progress_layout.addWidget(QLabel("加载进度:"))
+        self.loading_progress_bar = QProgressBar()
+        self.loading_progress_bar.setValue(0)
+        loading_progress_layout.addWidget(self.loading_progress_bar)
+
         
         # 添加组到布局
         layout.addWidget(dataset_group)
         layout.addWidget(preprocess_group)
         layout.addLayout(button_layout)
+        layout.addLayout(loading_progress_layout)  # 新增的进度条
         layout.addWidget(QLabel("数据集信息:"))
         layout.addWidget(self.dataset_info)
         layout.addStretch()
@@ -288,10 +378,10 @@ class AIModelGUI(QMainWindow):
         pretrain_group = QGroupBox("模型设置")
         pretrain_layout = QFormLayout(pretrain_group)
         
-        self.num_classes = QSpinBox()
-        self.num_classes.setRange(2, 10)
-        self.num_classes.setValue(3)  # 默认3个类别：积极、中性、消极
-        pretrain_layout.addRow("类别数:", self.num_classes)
+        # self.num_classes = QSpinBox()
+        # self.num_classes.setRange(2, 10)
+        # self.num_classes.setValue(3)  # 默认3个类别：积极、中性、消极
+        # pretrain_layout.addRow("类别数:", self.num_classes)
         
         left_layout.addWidget(pretrain_group)
         left_layout.addStretch()
@@ -425,6 +515,13 @@ class AIModelGUI(QMainWindow):
         eval_control_layout.addWidget(self.eval_button)
         eval_control_layout.addWidget(self.load_model_button)
         
+        # 添加模型加载进度条
+        model_loading_progress_layout = QHBoxLayout()
+        model_loading_progress_layout.addWidget(QLabel("模型加载进度:"))
+        self.model_loading_progress_bar = QProgressBar()
+        self.model_loading_progress_bar.setValue(0)
+        model_loading_progress_layout.addWidget(self.model_loading_progress_bar)
+        
         # 创建指标表格
         metrics_group = QGroupBox("评估指标")
         metrics_layout = QVBoxLayout(metrics_group)
@@ -446,6 +543,7 @@ class AIModelGUI(QMainWindow):
         # 添加组件到布局
         layout.addWidget(self.metrics_canvas)
         layout.addWidget(eval_control_group)
+        layout.addLayout(model_loading_progress_layout)  # 添加进度条到布局
         layout.addWidget(metrics_group)
         
         return tab
@@ -542,9 +640,46 @@ class AIModelGUI(QMainWindow):
         if file_path:
             self.test_path.setText(file_path)
 
+    def update_loading_progress(self, value):
+        """更新数据加载进度条"""
+        self.loading_progress_bar.setValue(value)
+
+    def loading_complete(self, train_loader, valid_loader, test_loader, info):
+        """数据加载完成的处理"""
+        if train_loader and valid_loader and test_loader:
+            self.train_loader = train_loader
+            self.valid_loader = valid_loader
+            self.test_loader = test_loader
+            self.dataset_ready = True
+            
+            # 清除并显示结果信息
+            self.dataset_info.clear()
+            self.dataset_info.append(info)
+            
+            # 尝试生成并显示分布图
+            try:
+                from utils.data_loader import load_sentiment_data
+                train_path = self.train_path.text() if self.train_path.text() else None
+                test_path = self.test_path.text() if self.test_path.text() else None
+                
+                train_texts, train_labels = load_sentiment_data('train', train_path)
+                test_texts, test_labels = load_sentiment_data('test', test_path)
+                
+                visualize_data_distribution(train_labels, "训练集分布")
+                visualize_data_distribution(test_labels, "测试集分布")
+                self.preview_button.setEnabled(True)  # 启用预览按钮
+            except Exception as e:
+                self.dataset_info.append(f"无法生成分布图: {str(e)}")
+        else:
+            self.dataset_info.append(info)
+            self.dataset_ready = False
+
+
     def load_dataset(self):
         """加载数据集并应用预处理参数"""
         self.dataset_info.append("正在加载数据集...")
+        self.loading_progress_bar.setValue(0)
+        
         try:
             # 获取用户选择的文件路径
             train_path = self.train_path.text() if self.train_path.text() else None
@@ -571,60 +706,18 @@ class AIModelGUI(QMainWindow):
             self.dataset_params = {
                 'max_length': max_length,
                 'train_split': train_split,
-                'normalize': self.normalize_check.isChecked(),
                 'train_path': train_path,
-                'test_path': test_path
+                'test_path': test_path,
+                'batch_size': self.batch_size.value()
             }
             
-            self.dataset_info.append("正在加载和处理数据集，请稍候...")
+            self.dataset_info.append("正在后台加载和处理数据集，请稍候...")
             
-            # 实际加载数据集，包括训练集、验证集和测试集
-            try:
-                # 加载训练和验证集
-                self.train_loader, self.valid_loader = load_train(
-                    batch_size=self.batch_size.value(),
-                    num_workers=2,
-                    split_ratio=1.0-train_split,  # 因为train_split是训练集占比
-                    max_length=max_length,
-                    custom_train_path=train_path
-                )
-                
-                # 加载测试集
-                self.test_loader = load_test(
-                    batch_size=self.batch_size.value(),
-                    num_workers=2,
-                    max_length=max_length,
-                    custom_test_path=test_path
-                )
-                
-                self.dataset_info.append(f"数据集加载完成，训练集和验证集已准备就绪")
-            
-                # 获取和显示数据集信息
-                dataset_info = get_dataset_info(train_path, test_path, max_length)
-                
-                # 显示数据集统计信息
-                self.dataset_info.clear()
-                self.dataset_info.append(f"数据集已成功加载: {len(self.train_loader.dataset)} 训练样本,\n {len(self.valid_loader.dataset)} 验证样本,\n {len(self.test_loader.dataset)} 测试样本")
-                
-                self.dataset_ready = True
-                
-                # 尝试生成并显示分布图
-                try:
-                    from utils.data_loader import load_sentiment_data
-                    train_texts, train_labels = load_sentiment_data('train', train_path)
-                    test_texts, test_labels = load_sentiment_data('test', test_path)
-                    
-                    visualize_data_distribution(train_labels, "训练集分布")
-                    visualize_data_distribution(test_labels, "测试集分布")
-                    
-                    self.dataset_info.append("已生成数据分布图")
-                except Exception as e:
-                    self.dataset_info.append(f"无法生成分布图: {str(e)}")
-            
-            except Exception as e:
-                self.dataset_info.append(f"加载数据集时出错: {str(e)}")
-                self.dataset_ready = False
-                return
+            # 创建并启动数据加载线程
+            self.loading_thread = DataLoadingThread(self.dataset_params)
+            self.loading_thread.update_progress.connect(self.update_loading_progress)
+            self.loading_thread.loading_complete.connect(self.loading_complete)
+            self.loading_thread.start()
             
         except Exception as e:
             self.dataset_info.append(f"数据集准备过程出错: {str(e)}")
@@ -642,8 +735,9 @@ class AIModelGUI(QMainWindow):
         try:
             # 创建一个对话框窗口
             preview_dialog = QDialog(self)
+            preview_dialog.setWindowFlags(preview_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
             preview_dialog.setWindowTitle("数据集预览")
-            preview_dialog.resize(800, 600)
+            preview_dialog.resize(1920, 1080)
             layout = QVBoxLayout(preview_dialog)
             
             # 创建选项卡
@@ -657,15 +751,16 @@ class AIModelGUI(QMainWindow):
             dataset_info = get_dataset_info(train_path, test_path)
             examples = dataset_info['examples']
             
+            label = ["消极", "中性", "积极"]
             # 训练集示例
             examples_layout.addWidget(QLabel("<h3>训练集示例</h3>"))
-            for i, text in enumerate(examples['训练'][:3]):
-                examples_layout.addWidget(QLabel(f"<b>示例 {i+1}:</b> {text}"))
+            for i, text in enumerate(examples['训练']):
+                examples_layout.addWidget(QLabel(f"<b>示例 {i+1}:</b> 文本：{text['text']}      标签：{label[text['label']]}"))
             
             # 测试集示例
             examples_layout.addWidget(QLabel("<h3>测试集示例</h3>"))
-            for i, text in enumerate(examples['测试'][:3]):
-                examples_layout.addWidget(QLabel(f"<b>示例 {i+1}:</b> {text}"))
+            for i, text in enumerate(examples['测试']):
+                examples_layout.addWidget(QLabel(f"<b>示例 {i+1}:</b> 文本：{text['text']}      标签：{label[text['label']]}"))
             
             examples_layout.addStretch()
             
@@ -681,17 +776,23 @@ class AIModelGUI(QMainWindow):
             train_dist_path = os.path.join(os.getcwd(), "训练集分布.png")
             test_dist_path = os.path.join(os.getcwd(), "测试集分布.png")
             
+            # 在 preview_dataset 方法中，找到加载图片的部分并修改
             if os.path.exists(train_dist_path):
                 pixmap = QPixmap(train_dist_path)
-                train_dist_image.setPixmap(pixmap.scaled(350, 300))
+                # 不用缩放到QLabel的当前大小，而是设置固定大小
+                train_dist_image.setMinimumSize(1200, 900)  # 设置最小尺寸
+                # 使用QLabel的大小而不是原始QLabel大小来缩放
+                train_dist_image.setPixmap(pixmap.scaled(1200, 900, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                 train_dist_image.setAlignment(Qt.AlignCenter)
             else:
                 train_dist_image.setText("训练集分布图不可用")
                 train_dist_image.setAlignment(Qt.AlignCenter)
-            
+
             if os.path.exists(test_dist_path):
                 pixmap = QPixmap(test_dist_path)
-                test_dist_image.setPixmap(pixmap.scaled(350, 300))
+                # 同样设置固定大小
+                test_dist_image.setMinimumSize(1200, 900)  # 设置最小尺寸
+                test_dist_image.setPixmap(pixmap.scaled(1200, 900, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                 test_dist_image.setAlignment(Qt.AlignCenter)
             else:
                 test_dist_image.setText("测试集分布图不可用")
@@ -807,7 +908,7 @@ class AIModelGUI(QMainWindow):
         
         try:
             # 检查设备
-            device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             
             # 获取自定义测试集路径
             test_path = self.test_path.text() if hasattr(self, 'test_path') and self.test_path.text() else None
@@ -815,7 +916,7 @@ class AIModelGUI(QMainWindow):
             # 加载测试数据
             test_loader = load_test(
                 batch_size=self.batch_size.value(), 
-                num_workers=2,
+                num_workers=4,
                 max_length=self.max_length.value(),
                 custom_test_path=test_path
             )
@@ -846,19 +947,29 @@ class AIModelGUI(QMainWindow):
         )
         
         if file_path:
-            try:
-                # 加载模型
-                self.log_message(f"加载模型: {file_path}")
-                
-                self.trained_model = SentimentClassifier()
-                self.trained_model.load_state_dict(torch.load(file_path))
-                self.trained_model.eval()
-                
-                self.eval_button.setEnabled(True)
-                self.log_message("模型加载成功，可以开始评估")
-            except Exception as e:
-                self.log_message(f"加载模型出错: {str(e)}")
-                
+            self.log_message(f"开始加载模型: {file_path}")
+            self.model_loading_progress_bar.setValue(0)
+            
+            # 创建并启动模型加载线程
+            self.model_loading_thread = ModelLoadingThread(file_path)
+            self.model_loading_thread.update_progress.connect(self.update_model_loading_progress)
+            self.model_loading_thread.loading_complete.connect(self.model_loading_complete)
+            self.model_loading_thread.start()
+    
+    def update_model_loading_progress(self, value):
+        """更新模型加载进度条"""
+        self.model_loading_progress_bar.setValue(value)
+        
+    def model_loading_complete(self, model, message):
+        """模型加载完成的处理"""
+        self.log_message(message)
+        
+        if model:
+            self.trained_model = model
+            self.eval_button.setEnabled(True)  # 启用评估按钮
+        else:
+            self.eval_button.setEnabled(False)  # 禁用评估按钮
+    
     def log_message(self, message):
         """将消息添加到日志输出框"""
         self.log_output.append(message)
@@ -866,6 +977,8 @@ class AIModelGUI(QMainWindow):
         self.log_output.verticalScrollBar().setValue(
             self.log_output.verticalScrollBar().maximum()
         )
+
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

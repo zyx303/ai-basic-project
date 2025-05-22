@@ -1,33 +1,52 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import AutoModel, AutoTokenizer, get_linear_schedule_with_warmup, BertConfig
 from torch.optim import AdamW
 import numpy as np
 from sklearn.metrics import accuracy_score
+import os
 
 class SentimentClassifier(nn.Module):
-    def __init__(self, model_name="bert-base-chinese", num_classes=3, dropout_rate=0.1):
+    def __init__(self, model_name="bert-base-chinese", num_classes=3, dropout_rate=0.1, local_model=False):
         """
         初始化情感分类模型
         Args:
             model_name: 预训练模型名称或路径
             num_classes: 类别数量(3,positive,negative,neutral)
             dropout_rate: Dropout比率
+            local_model: 是否从本地加载模型(不下载预训练权重)
         """
         super(SentimentClassifier, self).__init__()
         self.model_name = model_name
         self.num_classes = num_classes
         
-        # 加载预训练模型
-        self.embed = AutoModel.from_pretrained(model_name)
+        if not local_model:
+            # 加载预训练模型
+            try:
+                self.embed = AutoModel.from_pretrained(model_name)
+                # 加载tokenizer
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            except Exception as e:
+                print(f"加载预训练模型出错: {str(e)}")
+                # 使用配置创建模型，但不加载预训练权重
+                config = BertConfig.from_pretrained(model_name)
+                self.embed = AutoModel.from_config(config)
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
+        else:
+            # 使用BERT配置创建模型，但不下载预训练权重
+            config = BertConfig.from_pretrained(model_name, local_files_only=True)
+            self.embed = AutoModel.from_config(config)
+            # 尝试本地加载tokenizer或使用默认配置
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
+            except:
+                print("无法从本地加载tokenizer，将使用默认配置")
+                self.tokenizer = AutoTokenizer.from_pretrained("bert-base-chinese", local_files_only=False)
         
         # 分类器部分
         self.dropout = nn.Dropout(dropout_rate)
         self.classifier = nn.Linear(self.embed.config.hidden_size, num_classes)
-        
-        # 加载tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
     
     def forward(self, input_ids, attention_mask=None, token_type_ids=None):
         """
@@ -154,6 +173,33 @@ class SentimentClassifier(nn.Module):
         accuracy = accuracy_score(all_labels, all_preds)
         
         return avg_loss, accuracy
+    
+    @classmethod
+    def load_from_checkpoint(cls, checkpoint_path, device="cpu"):
+        """
+        从检查点加载模型
+        Args:
+            checkpoint_path: 保存的模型路径
+            device: 使用的设备
+        Returns:
+            加载好的模型
+        """
+        try:
+            # 创建一个没有预训练权重的模型实例
+            model = cls(local_model=True)
+            
+            # 加载保存的状态字典
+            state_dict = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(state_dict)
+            
+            # 将模型放到指定设备
+            model.to(device)
+            model.eval()
+            
+            return model
+        except Exception as e:
+            print(f"加载检查点出错: {str(e)}")
+            raise e
 
 
 

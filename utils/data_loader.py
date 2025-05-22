@@ -5,7 +5,9 @@ from torch.utils.data import DataLoader, SubsetRandomSampler, Dataset, random_sp
 import pandas as pd
 import os
 from transformers import AutoTokenizer
-
+# 设置支持中文显示的字体
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun', 'KaiTi', 'FangSong']  # 优先使用的中文字体列表
+plt.rcParams['axes.unicode_minus'] = False  # 解决保存图像时负号'-'显示为方块的问题
 class SentimentDataset(Dataset):
     def __init__(self, texts, labels, tokenizer, max_length=512):
         """情感分类数据集"""
@@ -79,13 +81,11 @@ def get_dataset_info(train_path=None, test_path=None, max_length=128):
     #     '训练': train_texts[:3] if train_texts else [],
     #     '测试': test_texts[:3] if test_texts else []
     # }
-    examples = {
-        'train': [],
-        'test': []
-    }
-    for i in range(3):
-        examples['train'].append(train_texts[i] if i < len(train_texts) else "无数据")
-        examples['test'].append(test_texts[i] if i < len(test_texts) else "无数据")
+    examples = {}
+    if train_texts:
+        examples['训练'] = [{'text': train_texts[i], 'label': train_labels[i]} for i in range(min(3, len(train_texts)))]
+    if test_texts:
+        examples['测试'] = [{'text': test_texts[i], 'label': test_labels[i]} for i in range(min(3, len(test_texts)))]
     
     # 整理信息
     info = {
@@ -117,7 +117,7 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def load_train(batch_size=128, num_workers=2, split_ratio=0.1, max_length=128, custom_train_path=None):
+def load_train(batch_size=128, num_workers=4, split_ratio=0.1, max_length=128, custom_train_path=None):
     """
     加载训练数据并分割为训练集和验证集
     
@@ -175,7 +175,7 @@ def load_train(batch_size=128, num_workers=2, split_ratio=0.1, max_length=128, c
     
     return train_loader, valid_loader
 
-def load_test(batch_size=128, num_workers=2, max_length=128, custom_test_path=None):
+def load_test(batch_size=128, num_workers=4, max_length=128, custom_test_path=None):
     """
     加载测试数据
     
@@ -300,12 +300,31 @@ def visualize_data_distribution(labels, title="数据分布"):
     unique_labels = np.unique(labels)
     counts = [labels.count(label) for label in unique_labels]
     
-    plt.figure(figsize=(8, 6))
-    plt.bar(['积极', '中性', '消极'], counts)
-    plt.title(title)
-    plt.xlabel('情感类别')
-    plt.ylabel('样本数量')
-    plt.savefig(f'{title}.png')
+    # 设置更大的图表尺寸和字体大小
+    plt.figure(figsize=(12, 9), dpi=100)  # 增大图表尺寸
+    
+    # 设置全局字体大小
+    plt.rcParams.update({'font.size': 16})  # 增大全局字体
+    
+    # 创建图表
+    bars = plt.bar(['消极', '中性', '积极'], counts)
+    
+    # 在条形上方添加数值标签
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                 str(height), ha='center', fontsize=16)
+    
+    # 设置标题和轴标签，使用更大的字体
+    plt.title(title, fontsize=22)
+    plt.xlabel('情感类别', fontsize=18)
+    plt.ylabel('样本数量', fontsize=18)
+    
+    # 调整布局，确保所有元素都能显示
+    plt.tight_layout()
+    
+    # 保存图表
+    plt.savefig(f'{title}.png', dpi=150)  # 提高DPI以获得更清晰的图像
     plt.close()
 
 def validate_data_format(file_path):
