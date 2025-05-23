@@ -7,7 +7,8 @@ import time
 import os
 
 def train_model(model, train_loader, valid_loader, criterion, optimizer, scheduler=None,
-                num_epochs=10, device=None, save_dir='./checkpoints',progress_callback=None,save_name='model'):
+                num_epochs=10, device=None, save_dir='./checkpoints',progress_callback=None, 
+                metrics_callback=None, save_name='model'):
     """
     训练模型并记录性能指标
 
@@ -20,6 +21,9 @@ def train_model(model, train_loader, valid_loader, criterion, optimizer, schedul
         num_epochs: 训练轮数
         device: 使用的设备
         save_dir: 模型保存目录
+        progress_callback: 进度回调函数
+        metrics_callback: 指标回调函数，每个epoch结束时调用
+        save_name: 保存的模型名称
 
     返回:
         history: 包含训练历史的字典
@@ -136,6 +140,17 @@ def train_model(model, train_loader, valid_loader, criterion, optimizer, schedul
         epoch_end = time.time()
         epoch_time = epoch_end - epoch_start
         history['epoch_times'].append(epoch_time)
+        
+        # 如果提供了指标回调函数，调用它
+        if metrics_callback:
+            metrics = {
+                'loss': train_loss,
+                'accuracy': train_acc,
+                'val_loss': val_loss,
+                'val_accuracy': val_acc,
+                'epoch': epoch + 1
+            }
+            metrics_callback(metrics)
 
         # 如果是最佳模型，保存权重
         if val_acc > best_val_acc:

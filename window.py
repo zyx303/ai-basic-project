@@ -1,3 +1,5 @@
+import warnings 
+warnings.filterwarnings("ignore")
 import sys
 import os
 import numpy as np
@@ -131,6 +133,12 @@ class TrainingThread(QThread):
             save_directory = self.params.get('save_directory', 'checkpoints')
             save_name = self.params.get('save_name', 'sentiment_model')
             device = self.params.get('device', 'cuda:0' if torch.cuda.is_available() else 'cpu')    
+            hidden_dim = self.params.get('hidden_dim', 768)  # 新增隐藏层维度参数
+            dropout_rate = self.params.get('dropout_rate', 0.1)  # 新增dropout比率参数
+
+            optimizer_name = self.params.get('optimizer', 'Adam')
+            loss_function = self.params.get('loss_function', 'CrossEntropyLoss')
+
             
             # 确保保存目录存在
             os.makedirs(save_directory, exist_ok=True)
@@ -140,12 +148,36 @@ class TrainingThread(QThread):
             
             classes = ["negative", "neural", "positive"]
             
-            # 初始化模型
-            model = SentimentClassifier(model_name=model_name, num_classes=len(classes))
+            # 初始化模型，传递新的超参数
+            model = SentimentClassifier(
+                model_name=model_name, 
+                num_classes=len(classes),
+                dropout_rate=dropout_rate,
+                hidden_dim=hidden_dim
+            )
             
             # 定义损失函数和优化器
-            criterion = nn.CrossEntropyLoss()
-            optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+            # criterion = nn.CrossEntropyLoss()
+            # optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+            if loss_function == 'CrossEntropyLoss':
+                criterion = nn.CrossEntropyLoss()
+            elif loss_function == 'BCEWithLogitsLoss':
+                criterion = nn.BCEWithLogitsLoss()
+            else:
+                raise ValueError("Unsupported loss function")
+            
+            if optimizer_name == 'Adam':
+                optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+            elif optimizer_name == 'AdamW':
+                optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
+            elif optimizer_name == 'SGD':
+                optimizer = optim.SGD(model.parameters(), lr=learning_rate)
+            elif optimizer_name == 'RMSprop':
+                optimizer = optim.RMSprop(model.parameters(), lr=learning_rate)
+            else:
+                raise ValueError("Unsupported optimizer")
+
+
             scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
             
             # 自定义进度回调函数
@@ -153,27 +185,20 @@ class TrainingThread(QThread):
                 progress = int(epoch / epochs * 100 + (batch / total_batches) * (100 / epochs))
                 self.update_progress.emit(progress)
             
+            # 增加指标回调函数
+            def metrics_callback(metrics):
+                self.update_metrics.emit(metrics)
+            
             # 训练模型
             trained_model, history = train_model(
                 model, self.train_loader, self.valid_loader, criterion, optimizer, scheduler,
                 num_epochs=epochs, device=device, save_dir=save_directory,save_name=save_name,
-                progress_callback=progress_callback
+                progress_callback=progress_callback, metrics_callback=metrics_callback
             )
             
             # 保存结果
             self.model = trained_model
             self.history = history
-            
-            # 每个epoch更新一次指标
-            for epoch in range(len(history['train_loss'])):
-                metrics = {
-                    'loss': history['train_loss'][epoch],
-                    'accuracy': history['train_acc'][epoch],
-                    'val_loss': history['val_loss'][epoch],
-                    'val_accuracy': history['val_acc'][epoch],
-                    'epoch': epoch + 1
-                }
-                self.update_metrics.emit(metrics)
             
             # 发出训练完成信号
             self.training_complete.emit(trained_model)
@@ -396,14 +421,14 @@ class MetricPlotCanvas(FigureCanvas):
             self.axes[0].clear()
             self.axes[1].clear()
             
-            self.axes[0].plot(self.epochs, self.loss_data['train'], 'b-', label='训练')
-            self.axes[0].plot(self.epochs, self.loss_data['val'], 'r-', label='验证')
+            self.axes[0].plot(self.epochs, self.loss_data['train'], 'bo-', label='训练')
+            self.axes[0].plot(self.epochs, self.loss_data['val'], 'ro-', label='验证')
             self.axes[0].legend()
             self.axes[0].set_title('损失')
             self.axes[0].grid(True)
             
-            self.axes[1].plot(self.epochs, self.acc_data['train'], 'b-', label='训练')
-            self.axes[1].plot(self.epochs, self.acc_data['val'], 'r-', label='验证')
+            self.axes[1].plot(self.epochs, self.acc_data['train'], 'bo-', label='训练')
+            self.axes[1].plot(self.epochs, self.acc_data['val'], 'ro-', label='验证')
             self.axes[1].legend()
             self.axes[1].set_title('准确率')
             self.axes[1].grid(True)
@@ -424,7 +449,7 @@ class AIModelGUI(QMainWindow):
     
     def init_ui(self):
         self.setWindowTitle('情感分类模型训练工具')
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1200, 1400)
         
         # 创建中央窗口部件
         central_widget = QWidget()
@@ -438,13 +463,11 @@ class AIModelGUI(QMainWindow):
         
         # 创建各选项卡
         dataset_tab = self.create_dataset_tab()
-        model_tab = self.create_model_tab()
         train_tab = self.create_training_tab()
         eval_tab = self.create_evaluation_tab()
         
         # 添加选项卡到选项卡窗口部件
         tabs.addTab(dataset_tab, "数据集")
-        tabs.addTab(model_tab, "模型参数")
         tabs.addTab(train_tab, "训练")
         tabs.addTab(eval_tab, "评估")
         
@@ -492,7 +515,7 @@ class AIModelGUI(QMainWindow):
         preprocess_layout.addRow("最大序列长度:", self.max_length)
         
         self.train_split = QDoubleSpinBox()
-        self.train_split.setRange(0.1, 0.9)
+        self.train_split.setRange(0.1, 0.95)
         self.train_split.setSingleStep(0.05)
         self.train_split.setValue(0.9)  # 90%训练，10%验证
         self.train_split.setDecimals(2)
@@ -532,61 +555,6 @@ class AIModelGUI(QMainWindow):
         
         return tab
     
-    def create_model_tab(self):
-        """创建模型参数选项卡"""
-        tab = QWidget()
-        layout = QHBoxLayout(tab)
-        
-        # 左侧 - 模型类型选择
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        
-        model_group = QGroupBox("模型类型")
-        model_layout = QFormLayout(model_group)
-        
-        self.model_name = QComboBox()
-        self.model_name.addItems(["bert-base-chinese", "chinese-bert-wwm", "chinese-roberta-wwm"])
-        model_layout.addRow("预训练模型:", self.model_name)
-        
-        left_layout.addWidget(model_group)
-        
-        # 预训练模型选项
-        pretrain_group = QGroupBox("模型设置")
-        pretrain_layout = QFormLayout(pretrain_group)
-        
-        # self.num_classes = QSpinBox()
-        # self.num_classes.setRange(2, 10)
-        # self.num_classes.setValue(3)  # 默认3个类别：积极、中性、消极
-        # pretrain_layout.addRow("类别数:", self.num_classes)
-        
-        left_layout.addWidget(pretrain_group)
-        left_layout.addStretch()
-        
-        # 右侧 - 模型参数设置
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        
-        self.model_params_group = QGroupBox("模型参数")
-        self.model_params_layout = QFormLayout(self.model_params_group)
-        
-        # 添加BERT模型特有参数
-        self.model_params_layout.addRow("隐藏层维度:", self.create_spin_box(64, 1024, 768, 64))
-        self.model_params_layout.addRow("注意力头数:", self.create_spin_box(1, 16, 12))
-        self.model_params_layout.addRow("Dropout率:", self.create_double_spin_box(0, 0.9, 0.1, 0.05))
-        
-        right_layout.addWidget(self.model_params_group)
-        right_layout.addStretch()
-        
-        # 添加面板到布局
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_panel)
-        splitter.addWidget(right_panel)
-        splitter.setSizes([300, 700])
-        
-        layout.addWidget(splitter)
-        
-        return tab
-    
     def create_training_tab(self):
         """创建训练选项卡"""
         tab = QWidget()
@@ -609,9 +577,9 @@ class AIModelGUI(QMainWindow):
         
         self.learning_rate = QDoubleSpinBox()
         self.learning_rate.setRange(0.0000001, 0.1)
-        self.learning_rate.setValue(0.00002)
         self.learning_rate.setDecimals(7)
         self.learning_rate.setSingleStep(0.00001)
+        self.learning_rate.setValue(0.00002)
         hyperparams_layout.addRow("学习率:", self.learning_rate)
         
         self.optimizer = QComboBox()
@@ -621,6 +589,33 @@ class AIModelGUI(QMainWindow):
         self.loss_function = QComboBox()
         self.loss_function.addItems(["CrossEntropyLoss", "BCEWithLogitsLoss"])
         hyperparams_layout.addRow("损失函数:", self.loss_function)
+        
+        # 模型参数设置
+        model_params_group = QGroupBox("模型参数设置")
+        model_params_layout = QFormLayout(model_params_group)
+        self.hidden_dim = QSpinBox()
+        self.hidden_dim.setRange(1, 1024)
+        self.hidden_dim.setValue(768)
+        self.hidden_dim.setSingleStep(16)
+        model_params_layout.addRow("隐藏层维度:", self.hidden_dim)
+        self.dropout_rate = QDoubleSpinBox()
+        self.dropout_rate.setRange(0.0, 1.0)
+        self.dropout_rate.setValue(0.1)
+        self.dropout_rate.setDecimals(2)
+        self.dropout_rate.setSingleStep(0.01)
+        model_params_layout.addRow("Dropout比率:", self.dropout_rate)
+        self.model_name = QComboBox()
+        self.model_name.addItems(["bert-base-chinese", "hfl/chinese-bert-wwm", "hfl/chinese-roberta-wwm-ext", "nghuyong/ernie-3.0-base-zh"])
+        model_params_layout.addRow("预训练模型:", self.model_name)
+
+
+        # 训练曲线可视化
+        plot_group = QGroupBox("训练过程可视化")
+        plot_layout = QVBoxLayout(plot_group)
+        
+        # 创建绘图画布
+        self.metrics_canvas = MetricPlotCanvas(width=8, height=4, dpi=100)
+        plot_layout.addWidget(self.metrics_canvas)
         
         # 训练控制
         training_group = QGroupBox("训练控制")
@@ -673,6 +668,8 @@ class AIModelGUI(QMainWindow):
         
         # 添加组到布局
         layout.addWidget(hyperparams_group)
+        layout.addWidget(model_params_group)
+        layout.addWidget(plot_group)  # 添加训练曲线可视化
         layout.addWidget(training_group)
         
         return tab
@@ -762,48 +759,14 @@ class AIModelGUI(QMainWindow):
         metrics_layout.addWidget(self.metrics_table)
         
         # 添加组件到布局
-        layout.addWidget(input_group)
         layout.addWidget(eval_control_group)
         layout.addLayout(model_loading_progress_layout)
         layout.addLayout(eval_progress_layout)  # 添加评估进度条
         layout.addWidget(metrics_group)
+        layout.addWidget(input_group)
         
         return tab
     
-    def update_model_params(self, index):
-        """根据选择的模型类型更新参数设置"""
-        # 清除现有的参数控件
-        while self.model_params_layout.rowCount() > 0:
-            self.model_params_layout.removeRow(0)
-        
-        model_type = self.model_name.currentText()
-        
-        if model_type == "CNN":
-            self.model_params_layout.addRow("卷积层数:", self.create_spin_box(1, 10, 3))
-            self.model_params_layout.addRow("初始卷积核数:", self.create_spin_box(8, 128, 32, 8))
-            self.model_params_layout.addRow("卷积核大小:", self.create_spin_box(2, 7, 3, 2))
-            self.model_params_layout.addRow("池化类型:", self.create_combo_box(["MaxPool", "AvgPool"]))
-            self.model_params_layout.addRow("Dropout率:", self.create_double_spin_box(0, 0.9, 0.5, 0.05))
-        elif model_type in ["RNN", "LSTM", "GRU"]:
-            self.model_params_layout.addRow("隐藏层大小:", self.create_spin_box(8, 512, 128, 8))
-            self.model_params_layout.addRow("层数:", self.create_spin_box(1, 5, 2))
-            self.model_params_layout.addRow("序列长度:", self.create_spin_box(5, 100, 20))
-            self.model_params_layout.addRow("双向:", self.create_check_box(False))
-            self.model_params_layout.addRow("Dropout率:", self.create_double_spin_box(0, 0.9, 0.3, 0.05))
-        elif model_type == "Transformer":
-            self.model_params_layout.addRow("注意力头数:", self.create_spin_box(1, 16, 8))
-            self.model_params_layout.addRow("编码器层数:", self.create_spin_box(1, 12, 6))
-            self.model_params_layout.addRow("前馈网络维度:", self.create_spin_box(128, 2048, 512, 128))
-            self.model_params_layout.addRow("Dropout率:", self.create_double_spin_box(0, 0.9, 0.1, 0.05))
-        elif model_type == "MLP":
-            self.model_params_layout.addRow("隐藏层数:", self.create_spin_box(1, 10, 2))
-            self.model_params_layout.addRow("隐藏层大小:", self.create_spin_box(8, 1024, 256, 8))
-            self.model_params_layout.addRow("激活函数:", self.create_combo_box(["ReLU", "Sigmoid", "Tanh", "LeakyReLU"]))
-            self.model_params_layout.addRow("Dropout率:", self.create_double_spin_box(0, 0.9, 0.2, 0.05))
-    
-    def toggle_pretrained(self, state):
-        """启用/禁用预训练模型选择"""
-        self.pretrained_model.setEnabled(state == Qt.Checked)
     
     def create_spin_box(self, min_val, max_val, default, step=1):
         """创建数值选择框"""
@@ -1047,6 +1010,12 @@ class AIModelGUI(QMainWindow):
             self.log_message("请先加载数据集!")
             return
         
+        # 重置训练曲线图表
+        if hasattr(self, 'metrics_canvas'):
+            self.metrics_canvas.loss_data = {'train': [], 'val': []}
+            self.metrics_canvas.acc_data = {'train': [], 'val': []}
+            self.metrics_canvas.epochs = []
+    
         # 收集训练参数
         training_params = {
             'batch_size': self.batch_size.value(),
@@ -1058,6 +1027,8 @@ class AIModelGUI(QMainWindow):
             'max_length': self.max_length.value(),
             'save_directory': self.save_path.text(),
             'save_name': self.save_name.text(),
+            'dropout_rate': self.dropout_rate.value(),
+            'hidden_dim': self.hidden_dim.value(),
             'device': 'cuda:0' if torch.cuda.is_available() else 'cpu'
         }
         
