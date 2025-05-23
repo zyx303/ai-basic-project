@@ -7,7 +7,7 @@ import time
 import os
 
 def train_model(model, train_loader, valid_loader, criterion, optimizer, scheduler=None,
-                num_epochs=10, device=None, save_dir='./checkpoints',progress_callback=None):
+                num_epochs=10, device=None, save_dir='./checkpoints',progress_callback=None,save_name='model'):
     """
     训练模型并记录性能指标
 
@@ -140,8 +140,8 @@ def train_model(model, train_loader, valid_loader, criterion, optimizer, schedul
         # 如果是最佳模型，保存权重
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            torch.save(model.state_dict(), f"{save_dir}/{model.__class__.__name__}_best.pth")
-            print(f"模型已保存到 {save_dir}/{model.__class__.__name__}_best.pth")
+            torch.save(model.state_dict(), f"{save_dir}/{save_name}_best.pth")
+            print(f"模型已保存到 {save_dir}/{save_name}_best.pth")
 
         print(f"训练损失: {train_loss:.4f}, 训练准确率: {train_acc:.4f}")
         print(f"验证损失: {val_loss:.4f}, 验证准确率: {val_acc:.4f}")
@@ -153,86 +153,6 @@ def train_model(model, train_loader, valid_loader, criterion, optimizer, schedul
     print(f"总训练时间: {total_time:.2f}s")
 
     return model, history
-
-def evaluate_model(model, test_loader, criterion, device=None, classes=None):
-    """
-    评估模型在测试集上的性能
-
-    参数:
-        model: 要评估的模型
-        test_loader: 测试数据加载器
-        criterion: 损失函数
-        device: 使用的设备
-        classes: 类别名称列表
-
-    返回:
-        test_loss: 测试损失
-        test_acc: 测试准确率
-    """
-    if device is None:
-        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
-    model = model.to(device)
-    model.eval()
-
-    test_loss = 0.0
-    test_correct = 0
-    test_total = 0
-
-    y_true = []
-    y_pred = []
-
-    with torch.no_grad():
-        for batch in test_loader:
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            token_type_ids = batch['token_type_ids'].to(device) if 'token_type_ids' in batch else None
-            labels = batch['labels'].to(device)
-
-           # 前向传播
-            if token_type_ids is not None:
-                outputs = model(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
-            else:
-                outputs = model(input_ids, attention_mask=attention_mask)
-            loss = criterion(outputs, labels)
-
-            # 统计
-            test_loss += loss.item() * input_ids.size(0)
-            _, predicted = torch.max(outputs, 1)
-            test_total += labels.size(0)
-            test_correct += (predicted == labels).sum().item()
-
-            # 收集真实标签和预测标签
-            y_true.extend(labels.cpu().numpy())
-            y_pred.extend(predicted.cpu().numpy())
-
-    # 计算测试指标
-    test_loss = test_loss / len(test_loader.dataset)
-    test_acc = test_correct / test_total
-
-    print(f"测试损失: {test_loss:.4f}, 测试准确率: {test_acc:.4f}")
-
-    # 如果提供了类别名称，计算混淆矩阵
-    if classes:
-        try:
-            from sklearn.metrics import confusion_matrix, classification_report
-            import seaborn as sns
-
-            cm = confusion_matrix(y_true, y_pred)
-            plt.figure(figsize=(10, 8))
-            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
-            plt.xlabel('Predicted')  # 英文标签
-            plt.ylabel('True')  # 英文标签
-            plt.title('Confusion Matrix')  # 英文标题
-            plt.show()
-
-            # 打印分类报告
-            print("分类报告:")
-            print(classification_report(y_true, y_pred, target_names=classes))
-        except ImportError:
-            print("警告: 未安装sklearn或seaborn，无法生成混淆矩阵和分类报告")
-
-    return test_loss, test_acc
 
 def plot_training_history(history, title="Training History"):
     """
