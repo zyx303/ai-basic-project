@@ -8,13 +8,14 @@ from sklearn.metrics import accuracy_score
 import os
 
 class SentimentClassifier(nn.Module):
-    def __init__(self, model_name="bert-base-chinese", num_classes=3, dropout_rate=0.1, local_model=False):
+    def __init__(self, model_name="bert-base-chinese", num_classes=3, dropout_rate=0.1, hidden_dim=768, local_model=False):
         """
         初始化情感分类模型
         Args:
             model_name: 预训练模型名称或路径
             num_classes: 类别数量(3,positive,negative,neutral)
             dropout_rate: Dropout比率
+            hidden_dim: MLP隐藏层维度
             local_model: 是否从本地加载模型(不下载预训练权重)
         """
         super(SentimentClassifier, self).__init__()
@@ -46,7 +47,12 @@ class SentimentClassifier(nn.Module):
         
         # 分类器部分
         self.dropout = nn.Dropout(dropout_rate)
-        self.classifier = nn.Linear(self.embed.config.hidden_size, num_classes)
+        self.classifier = nn.Sequential(
+            nn.Linear(self.embed.config.hidden_size, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dim, num_classes)
+        )
     
     def forward(self, input_ids, attention_mask=None, token_type_ids=None):
         """
@@ -185,11 +191,18 @@ class SentimentClassifier(nn.Module):
             加载好的模型
         """
         try:
-            # 创建一个没有预训练权重的模型实例
-            model = cls(local_model=True)
-            
-            # 加载保存的状态字典
+            # 首先加载状态字典(不加载到模型)
             state_dict = torch.load(checkpoint_path, map_location=device)
+            
+            # 从状态字典中推断隐藏层维度
+            # classifier.0.weight的形状是[hidden_dim, embed_dim]
+            # classifier.3.weight的形状是[num_classes, hidden_dim]
+            hidden_dim = state_dict['classifier.0.bias'].size(0)
+            
+            # 使用推断出的hidden_dim创建模型
+            model = cls(local_model=True, hidden_dim=hidden_dim)
+            
+            # 加载状态字典
             model.load_state_dict(state_dict)
             
             # 将模型放到指定设备
