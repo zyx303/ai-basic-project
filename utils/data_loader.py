@@ -31,10 +31,17 @@ class SentimentDataset(Dataset):
             return_tensors='pt'
         )
         
+        # 确保token_type_ids始终存在
+        token_type_ids = encoding.get('token_type_ids', None)
+        if token_type_ids is None:
+            token_type_ids = torch.zeros(self.max_length, dtype=torch.long)
+        else:
+            token_type_ids = token_type_ids.flatten()
+        
         return {
             'input_ids': encoding['input_ids'].flatten(),
             'attention_mask': encoding['attention_mask'].flatten(),
-            'token_type_ids': encoding.get('token_type_ids', torch.zeros(self.max_length, dtype=torch.long)).flatten(),
+            'token_type_ids': token_type_ids,
             'labels': torch.tensor(label, dtype=torch.long)
         }
     

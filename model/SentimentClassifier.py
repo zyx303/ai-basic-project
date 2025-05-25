@@ -194,13 +194,31 @@ class SentimentClassifier(nn.Module):
             # 首先加载状态字典(不加载到模型)
             state_dict = torch.load(checkpoint_path, map_location=device)
             
-            # 从状态字典中推断隐藏层维度
+            # 从状态字典中推断参数
             # classifier.0.weight的形状是[hidden_dim, embed_dim]
             # classifier.3.weight的形状是[num_classes, hidden_dim]
-            hidden_dim = state_dict['classifier.0.bias'].size(0)
+            if 'classifier.0.bias' in state_dict:
+                hidden_dim = state_dict['classifier.0.bias'].size(0)
+            else:
+                # 备用方案：从权重矩阵推断
+                hidden_dim = state_dict['classifier.0.weight'].size(0)
             
-            # 使用推断出的hidden_dim创建模型
-            model = cls(local_model=True, hidden_dim=hidden_dim)
+            # 推断类别数
+            if 'classifier.3.bias' in state_dict:
+                num_classes = state_dict['classifier.3.bias'].size(0)
+            else:
+                num_classes = state_dict['classifier.3.weight'].size(0)
+            
+            # 推断dropout率（从权重名称推断，默认值0.1）
+            dropout_rate = 0.1
+            
+            # 使用推断出的参数创建模型
+            model = cls(
+                local_model=True, 
+                hidden_dim=hidden_dim,
+                num_classes=num_classes,
+                dropout_rate=dropout_rate
+            )
             
             # 加载状态字典
             model.load_state_dict(state_dict)

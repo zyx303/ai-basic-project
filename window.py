@@ -16,10 +16,52 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from model.SentimentClassifier import SentimentClassifier
-from utils.data_loader import (load_test, load_train, set_seed, get_dataset_info, 
-                               validate_data_format, visualize_data_distribution)
-from utils.train_utils import train_model
+
+# 修复导入问题 - 添加当前目录到Python路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+# 检测是否为打包环境
+def is_frozen():
+    """检测是否在PyInstaller打包环境中运行"""
+    return getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS')
+
+# 根据环境设置工作进程数
+NUM_WORKERS = 0 if is_frozen() else 4
+
+# 使用异常处理来兼容不同的导入方式
+try:
+    # 尝试直接导入（打包环境）
+    from model.SentimentClassifier import SentimentClassifier
+    from utils.data_loader import (load_test, load_train, set_seed, get_dataset_info, 
+                                   validate_data_format, visualize_data_distribution)
+    from utils.train_utils import train_model
+except ImportError:
+    try:
+        # 尝试相对导入（开发环境）
+        from .model.SentimentClassifier import SentimentClassifier
+        from .utils.data_loader import (load_test, load_train, set_seed, get_dataset_info, 
+                                       validate_data_format, visualize_data_distribution)
+        from .utils.train_utils import train_model
+    except ImportError:
+        # 最后的备用方案 - 直接添加路径
+        model_path = os.path.join(current_dir, 'model')
+        utils_path = os.path.join(current_dir, 'utils')
+        if model_path not in sys.path:
+            sys.path.insert(0, model_path)
+        if utils_path not in sys.path:
+            sys.path.insert(0, utils_path)
+        
+        from SentimentClassifier import SentimentClassifier
+        from data_loader import (load_test, load_train, set_seed, get_dataset_info, 
+                                validate_data_format, visualize_data_distribution)
+        from train_utils import train_model
+
+# 设置matplotlib中文字体支持
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun', 'KaiTi', 'FangSong']
+plt.rcParams['axes.unicode_minus'] = False
+
 class ROCCurveCanvas(FigureCanvas):
     """用于显示ROC曲线的画布"""
     def __init__(self, parent=None, width=5, height=4, dpi=100):
@@ -97,11 +139,11 @@ class DataLoadingThread(QThread):
             # 模拟加载进度
             self.update_progress.emit(10)
             
-            # 加载训练和验证集
+            # 加载训练和验证集 - 使用全局NUM_WORKERS
             self.update_progress.emit(20)
             train_loader, valid_loader = load_train(
                 batch_size=batch_size,
-                num_workers=4,
+                num_workers=NUM_WORKERS,
                 split_ratio=1.0-train_split,
                 max_length=max_length,
                 custom_train_path=train_path
@@ -109,10 +151,10 @@ class DataLoadingThread(QThread):
             
             self.update_progress.emit(60)
             
-            # 加载测试集
+            # 加载测试集 - 使用全局NUM_WORKERS
             test_loader = load_test(
                 batch_size=batch_size,
-                num_workers=4,
+                num_workers=NUM_WORKERS,
                 max_length=max_length,
                 custom_test_path=test_path
             )
@@ -284,12 +326,12 @@ class EvaluationThread(QThread):
             test_path = self.params.get('test_path')
             batch_size = self.params.get('batch_size', 32)
             
-            # 如果没有提供测试加载器，则创建一个
+            # 如果没有提供测试加载器，则创建一个 - 使用全局NUM_WORKERS
             if not self.test_loader:
                 self.update_progress.emit(20)
                 self.test_loader = load_test(
                     batch_size=batch_size, 
-                    num_workers=4,
+                    num_workers=NUM_WORKERS,
                     max_length=max_length,
                     custom_test_path=test_path
                 )
@@ -697,7 +739,7 @@ class AIModelGUI(QMainWindow):
         model_params_layout.addRow("Dropout比率:", self.dropout_rate)
         self.model_name = QComboBox()
         self.model_name.addItems(["bert-base-chinese", "hfl/chinese-bert-wwm", "hfl/chinese-roberta-wwm-ext", "nghuyong/ernie-3.0-base-zh"])
-        model_params_layout.addRow("预训练模型:", self.model_name)
+        model_params_layout.addRow("embedder:", self.model_name)
 
 
         # 训练曲线可视化
@@ -1369,6 +1411,11 @@ class AIModelGUI(QMainWindow):
 
 
 if __name__ == "__main__":
+    # 防止在打包环境中多进程问题
+    if is_frozen():
+        import multiprocessing
+        multiprocessing.freeze_support()
+    
     app = QApplication(sys.argv)
     ex = AIModelGUI()
     ex.show()

@@ -54,39 +54,40 @@ def train_model(model, train_loader, valid_loader, criterion, optimizer, schedul
         train_loss = 0.0
         train_correct = 0
         train_total = 0
-        # 添加对进度回调的支持
-        if progress_callback:
-            # 在训练循环中调用进度回调
-            total_batches = len(train_loader)
-            for batch_idx, batch in enumerate(train_loader):  # 修改这里，直接获取整个批次数据
-                # 从字典中获取各个组件
-                input_ids = batch['input_ids'].to(device)
-                attention_mask = batch['attention_mask'].to(device)
-                token_type_ids = batch['token_type_ids'].to(device) if 'token_type_ids' in batch else None
-                labels = batch['labels'].to(device)
+        
+        # 修改：支持有无进度回调的情况
+        total_batches = len(train_loader)
+        for batch_idx, batch in enumerate(train_loader):
+            # 从字典中获取各个组件
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            token_type_ids = batch['token_type_ids'].to(device) if 'token_type_ids' in batch else None
+            labels = batch['labels'].to(device)
+            
+            # 清除之前的梯度
+            optimizer.zero_grad()
+            
+            # 前向传播
+            if token_type_ids is not None:
+                outputs = model(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+            else:
+                outputs = model(input_ids, attention_mask=attention_mask)
                 
-                # 清除之前的梯度
-                optimizer.zero_grad()
-                
-                # 前向传播
-                if token_type_ids is not None:
-                    outputs = model(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
-                else:
-                    outputs = model(input_ids, attention_mask=attention_mask)
-                    
-                # 计算损失
-                loss = criterion(outputs, labels)
-                
-                # 反向传播和优化
-                loss.backward()
-                optimizer.step()
-                
-                # 更新统计信息
-                train_loss += loss.item()* input_ids.size(0)
-                _, predicted = torch.max(outputs, 1)
-                train_total += labels.size(0)
-                train_correct += (predicted == labels).sum().item()
-                # 调用进度回调
+            # 计算损失
+            loss = criterion(outputs, labels)
+            
+            # 反向传播和优化
+            loss.backward()
+            optimizer.step()
+            
+            # 更新统计信息
+            train_loss += loss.item() * input_ids.size(0)
+            _, predicted = torch.max(outputs, 1)
+            train_total += labels.size(0)
+            train_correct += (predicted == labels).sum().item()
+            
+            # 调用进度回调（如果提供）
+            if progress_callback:
                 progress_callback(epoch, batch_idx + 1, total_batches)
 
         # 计算训练指标
