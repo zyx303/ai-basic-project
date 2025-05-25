@@ -20,6 +20,61 @@ from model.SentimentClassifier import SentimentClassifier
 from utils.data_loader import (load_test, load_train, set_seed, get_dataset_info, 
                                validate_data_format, visualize_data_distribution)
 from utils.train_utils import train_model
+class ROCCurveCanvas(FigureCanvas):
+    """用于显示ROC曲线的画布"""
+    def __init__(self, parent=None, width=5, height=4, dpi=100):
+        self.fig, self.ax = plt.subplots(figsize=(width, height), dpi=dpi)
+        super(ROCCurveCanvas, self).__init__(self.fig)
+        
+        self.setup_plot()
+        
+    def setup_plot(self):
+        self.ax.set_title('ROC曲线')
+        self.ax.set_xlabel('假正率 (False Positive Rate)')
+        self.ax.set_ylabel('真正率 (True Positive Rate)')
+        self.ax.plot([0, 1], [0, 1], 'k--', label='随机分类器')
+        self.ax.set_xlim([0.0, 1.0])
+        self.ax.set_ylim([0.0, 1.05])
+        self.ax.grid(True)
+        self.ax.legend()
+        self.fig.tight_layout()
+    
+    def update_plot(self, roc_data):
+        if not roc_data:
+            return
+            
+        self.ax.clear()
+        
+        # 重新设置基本属性
+        self.ax.set_title('ROC曲线')
+        self.ax.set_xlabel('假正率 (False Positive Rate)')
+        self.ax.set_ylabel('真正率 (True Positive Rate)')
+        self.ax.plot([0, 1], [0, 1], 'k--', label='随机分类器')
+        
+        fpr = roc_data['fpr']
+        tpr = roc_data['tpr']
+        roc_auc = roc_data['roc_auc']
+        classes = roc_data['classes']
+        
+        colors = ['red', 'blue', 'green']
+        
+        # 绘制每个类别的ROC曲线
+        for i, color in enumerate(colors):
+            if i in fpr:
+                self.ax.plot(fpr[i], tpr[i], color=color, lw=2,
+                           label=f'{classes[i]} (AUC = {roc_auc[i]:.2f})')
+        
+        # # 绘制微平均ROC曲线
+        # if 'micro' in fpr:
+        #     self.ax.plot(fpr['micro'], tpr['micro'], color='orange', lw=2,
+        #                label=f'微平均 (AUC = {roc_auc["micro"]:.2f})')
+        
+        self.ax.set_xlim([0.0, 1.0])
+        self.ax.set_ylim([0.0, 1.05])
+        self.ax.grid(True)
+        self.ax.legend(loc="lower right")
+        self.fig.tight_layout()
+        self.draw()
 
 class DataLoadingThread(QThread):
     """用于后台加载数据集的线程类"""
@@ -210,7 +265,7 @@ class TrainingThread(QThread):
 class EvaluationThread(QThread):
     """用于后台评估模型的线程类"""
     update_progress = pyqtSignal(int)
-    evaluation_complete = pyqtSignal(dict)  # 传递所有评估指标
+    evaluation_complete = pyqtSignal(dict, dict)  # 传递评估指标和ROC数据
     
     def __init__(self, model, params, test_loader=None):
         super().__init__()
@@ -247,20 +302,22 @@ class EvaluationThread(QThread):
             
             # 评估模型
             self.update_progress.emit(40)
-            from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
+            from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score, roc_curve, auc
+            from sklearn.preprocessing import label_binarize
             
             self.model.eval()
             self.model.to(device)
             
             all_preds = []
             all_labels = []
+            all_probs = []  # 新增：保存预测概率
             total_loss = 0.0
             total_samples = 0
             
             with torch.no_grad():
                 for batch_idx, batch in enumerate(self.test_loader):
                     # 更新进度
-                    progress = 40 + int(50 * batch_idx / len(self.test_loader))
+                    progress = 40 + int(40 * batch_idx / len(self.test_loader))
                     self.update_progress.emit(progress)
                     
                     input_ids = batch['input_ids'].to(device)
@@ -275,19 +332,44 @@ class EvaluationThread(QThread):
                     total_loss += loss.item() * labels.size(0)
                     total_samples += labels.size(0)
                     
-                    # 获取预测结果
+                    # 获取预测结果和概率
+                    probabilities = torch.nn.functional.softmax(outputs, dim=1)
                     _, predicted = torch.max(outputs, 1)
                     
-                    # 收集预测和真实标签用于计算指标
+                    # 收集预测、真实标签和概率
                     all_preds.extend(predicted.cpu().numpy())
                     all_labels.extend(labels.cpu().numpy())
+                    all_probs.extend(probabilities.cpu().numpy())
             
-            # 计算所有指标
+            self.update_progress.emit(80)
+            
+            # 计算基本指标
             avg_loss = total_loss / total_samples
             accuracy = accuracy_score(all_labels, all_preds)
             precision = precision_score(all_labels, all_preds, average='macro')
             recall = recall_score(all_labels, all_preds, average='macro')
             f1 = f1_score(all_labels, all_preds, average='macro')
+            
+            # 计算ROC曲线数据
+            y_true = np.array(all_labels)
+            y_probs = np.array(all_probs)
+            
+            # 将标签转换为二进制格式 (one-hot)
+            y_true_binarized = label_binarize(y_true, classes=[0, 1, 2])
+            n_classes = y_true_binarized.shape[1]
+            
+            # 计算每个类别的ROC曲线
+            fpr = dict()
+            tpr = dict()
+            roc_auc = dict()
+            
+            for i in range(n_classes):
+                fpr[i], tpr[i], _ = roc_curve(y_true_binarized[:, i], y_probs[:, i])
+                roc_auc[i] = auc(fpr[i], tpr[i])
+            
+            # 计算微平均ROC曲线
+            fpr["micro"], tpr["micro"], _ = roc_curve(y_true_binarized.ravel(), y_probs.ravel())
+            roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
             
             # 汇总结果
             metrics = {
@@ -298,15 +380,24 @@ class EvaluationThread(QThread):
                 'test_f1': f1
             }
             
+            # ROC数据
+            roc_data = {
+                'fpr': fpr,
+                'tpr': tpr,
+                'roc_auc': roc_auc,
+                'classes': classes
+            }
+            
             self.update_progress.emit(100)
             
             # 发送完成信号
-            self.evaluation_complete.emit(metrics)
+            self.evaluation_complete.emit(metrics, roc_data)
             
         except Exception as e:
             print(f"评估出错: {str(e)}")
-            self.evaluation_complete.emit({})
+            self.evaluation_complete.emit({}, {})
 
+            
 class PredictionThread(QThread):
     """用于后台进行情感预测的线程类"""
     update_progress = pyqtSignal(int)
@@ -739,7 +830,10 @@ class AIModelGUI(QMainWindow):
         self.eval_progress_bar = QProgressBar()
         self.eval_progress_bar.setValue(0)
         eval_progress_layout.addWidget(self.eval_progress_bar)
+         # 创建评估结果区域 - 使用水平分割器
+        eval_results_splitter = QSplitter(Qt.Horizontal)
         
+        # 左侧：指标表格
         # 创建指标表格
         metrics_group = QGroupBox("评估指标")
         metrics_layout = QVBoxLayout(metrics_group)
@@ -757,12 +851,24 @@ class AIModelGUI(QMainWindow):
         
         self.metrics_table.horizontalHeader().setStretchLastSection(True)
         metrics_layout.addWidget(self.metrics_table)
+
+        # 右侧：ROC曲线
+        roc_group = QGroupBox("ROC曲线")
+        roc_layout = QVBoxLayout(roc_group)
+        
+        self.roc_canvas = ROCCurveCanvas(width=6, height=4, dpi=100)
+        roc_layout.addWidget(self.roc_canvas)
+        
+        # 添加到分割器
+        eval_results_splitter.addWidget(metrics_group)
+        eval_results_splitter.addWidget(roc_group)
+        eval_results_splitter.setSizes([300, 600])  # 设置初始大小比例
         
         # 添加组件到布局
         layout.addWidget(eval_control_group)
         layout.addLayout(model_loading_progress_layout)
         layout.addLayout(eval_progress_layout)  # 添加评估进度条
-        layout.addWidget(metrics_group)
+        layout.addWidget(eval_results_splitter)
         layout.addWidget(input_group)
         
         return tab
@@ -1148,12 +1254,13 @@ class AIModelGUI(QMainWindow):
         """更新评估进度条"""
         self.eval_progress_bar.setValue(value)
 
-    def evaluation_complete(self, metrics):
+    def evaluation_complete(self, metrics, roc_data):
         """评估完成的处理"""
         self.eval_button.setEnabled(True)  # 重新启用评估按钮
         
         if not metrics:
-            self.log_message("评估失败！")
+            # self.log_message("评估失败！")
+            self.show_warning_dialog("评估失败！")
             return
         
         # 更新UI显示所有指标
@@ -1163,11 +1270,10 @@ class AIModelGUI(QMainWindow):
         self.metrics_table.setItem(3, 1, QTableWidgetItem(f"{metrics.get('test_recall', 0):.4f}"))
         self.metrics_table.setItem(4, 1, QTableWidgetItem(f"{metrics.get('test_f1', 0):.4f}"))
         
-        self.log_message(f"评估完成 - 准确率: {metrics.get('test_acc', 0):.4f}, "
-                        f"损失: {metrics.get('test_loss', 0):.4f}, "
-                        f"精确率: {metrics.get('test_precision', 0):.4f}, "
-                        f"召回率: {metrics.get('test_recall', 0):.4f}, "
-                        f"F1分数: {metrics.get('test_f1', 0):.4f}")
+        # 更新ROC曲线
+        if roc_data:
+            self.roc_canvas.update_plot(roc_data)
+
     
     def load_model(self):
         """加载预训练模型"""
@@ -1177,7 +1283,7 @@ class AIModelGUI(QMainWindow):
         )
         
         if file_path:
-            self.log_message(f"开始加载模型: {file_path}")
+            # self.log_message(f"开始加载模型: {file_path}")
             self.model_loading_progress_bar.setValue(0)
             
             # 创建并启动模型加载线程
@@ -1192,7 +1298,7 @@ class AIModelGUI(QMainWindow):
         
     def model_loading_complete(self, model, message):
         """模型加载完成的处理"""
-        self.log_message(message)
+        # self.log_message(message)
         
         if model:
             self.trained_model = model
@@ -1210,7 +1316,7 @@ class AIModelGUI(QMainWindow):
         
         # 获取输入文本
         text = self.text_input.toPlainText().strip()
-        self.log_message(f"正在预测文本: {text}")
+        # self.log_message(f"正在预测文本: {text}")
         self.predict_progress_bar.setValue(0)
         self.predict_button.setEnabled(False)  # 预测时禁用按钮
         
@@ -1227,7 +1333,7 @@ class AIModelGUI(QMainWindow):
             
         except Exception as e:
             self.prediction_result.setText(f"预测出错: {str(e)}")
-            self.log_message(f"预测过程出错: {str(e)}")
+            # self.log_message(f"预测过程出错: {str(e)}")
             self.predict_button.setEnabled(True)  # 出错时重新启用按钮
 
     def update_predict_progress(self, value):
