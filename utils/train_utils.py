@@ -66,7 +66,6 @@ def train_model(model, train_loader, valid_loader, criterion, optimizer, schedul
             
             # 清除之前的梯度
             optimizer.zero_grad()
-            
             # 前向传播
             if token_type_ids is not None:
                 outputs = model(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)

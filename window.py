@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                             QCheckBox, QProgressBar, QTextEdit, QSplitter, QTableWidget,
                             QTableWidgetItem, QSlider,QMessageBox)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'  # 设置Hugging Face的镜像地址
 # 导入情感分类相关模块
 import torch
 import torch.nn as nn
@@ -206,6 +206,7 @@ class TrainingThread(QThread):
     """用于后台训练模型的线程类"""
     update_progress = pyqtSignal(int)
     update_metrics = pyqtSignal(dict)
+    update_log = pyqtSignal(str)  
     training_complete = pyqtSignal(object)  # 传递训练后的模型
     
     def __init__(self, params):
@@ -220,7 +221,9 @@ class TrainingThread(QThread):
         try:
             # 设置随机种子
             set_seed()
-            
+            def log_callback(message):
+                """日志回调函数，用于输出训练日志"""
+                self.update_log.emit(message)
             # 参数准备
             batch_size = self.params.get('batch_size', 32)
             learning_rate = self.params.get('learning_rate', 2e-5)
@@ -244,7 +247,7 @@ class TrainingThread(QThread):
             device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
             
             classes = ["negative", "neural", "positive"]
-            
+            log_callback("初始化模型，下载预训练模型中")
             # 初始化模型，传递新的超参数
             model = SentimentClassifier(
                 model_name=model_name, 
@@ -252,6 +255,7 @@ class TrainingThread(QThread):
                 dropout_rate=dropout_rate,
                 hidden_dim=hidden_dim
             )
+            log_callback("模型初始化完成")
             
             # 定义损失函数和优化器
             # criterion = nn.CrossEntropyLoss()
@@ -286,12 +290,16 @@ class TrainingThread(QThread):
             def metrics_callback(metrics):
                 self.update_metrics.emit(metrics)
             
+            
+
+            log_callback(f"训练中")
             # 训练模型
             trained_model, history = train_model(
                 model, self.train_loader, self.valid_loader, criterion, optimizer, scheduler,
                 num_epochs=epochs, device=device, save_dir=save_directory,save_name=save_name,
                 progress_callback=progress_callback, metrics_callback=metrics_callback
             )
+            log_callback(f"模型加载完成")
             
             # 保存结果
             self.model = trained_model
@@ -1190,6 +1198,7 @@ class AIModelGUI(QMainWindow):
         
         self.training_thread.update_progress.connect(self.update_progress)
         self.training_thread.update_metrics.connect(self.update_metrics)
+        self.training_thread.update_log.connect(self.log_message)
         self.training_thread.training_complete.connect(self.training_complete)
         self.training_thread.start()
         
